@@ -240,8 +240,7 @@ func readData(ctx context.Context, host string, port string, lookupAddr string, 
 								TimestampUTC: currentTimeStamp,
 							})
 					}
-					if len(value.Data.HeadingTrack) >= 1 && value.Data.HeadingTrack[len(value.Data.HeadingTrack)-1].Data == result.HeadingTrack.Value &&
-						value.Data.HeadingTrack[len(value.Data.HeadingTrack)-1].Data == result.HeadingTrack.Value {
+					if len(value.Data.HeadingTrack) >= 1 && value.Data.HeadingTrack[len(value.Data.HeadingTrack)-1].Data != result.HeadingTrack.Value {
 						newValue.Data.HeadingTrack = append(
 							newValue.Data.HeadingTrack,
 							DataOverTime[int]{
@@ -278,8 +277,7 @@ func readData(ctx context.Context, host string, port string, lookupAddr string, 
 								TimestampUTC: currentTimeStamp,
 							})
 					}
-					if len(value.Data.SquawkCode) >= 1 && value.Data.SquawkCode[len(value.Data.SquawkCode)-1].Data == result.SquawkCode.Value &&
-						value.Data.SquawkCode[len(value.Data.SquawkCode)-1].Data == result.SquawkCode.Value {
+					if len(value.Data.SquawkCode) >= 1 && value.Data.SquawkCode[len(value.Data.SquawkCode)-1].Data != result.SquawkCode.Value {
 						newValue.Data.SquawkCode = append(
 							newValue.Data.SquawkCode,
 							DataOverTime[int]{
@@ -320,7 +318,7 @@ func tick(ticker *time.Ticker, stop chan bool) {
 }
 
 func scanForEntryIntoDB(
-    ctx context.Context,
+	ctx context.Context,
 	db *database.Db,
 	sto *storage.Storage[CollectedData],
 	done chan bool,
@@ -332,8 +330,10 @@ func scanForEntryIntoDB(
 		<-ticker.C
 		Log("Checking for Aircraft to add to the database", INFO)
 		doPerNode := func(item storage.Item[CollectedData]) {
-			getRidOfAt := time.UnixMilli(item.Data.LastSeen).UTC().Add(time.Duration(sessionLen)).UnixMilli()
-			if getRidOfAt >= time.Now().UTC().UnixMilli() { 
+            now := time.Now().UTC().UnixMilli()
+            then :=  time.UnixMilli(item.Data.LastSeen).UTC().UnixMilli()
+			if (now - then) >= 10000 {
+				Log(fmt.Sprintf("Add storage %d getRidOfAt : %d", time.Now().UTC().UnixMilli(), (now - then)), INFO)
 				headingTrack := traveseTheData[int](item.Data.HeadingTrack)
 				altitude := traveseTheData[float32](item.Data.Altitude)
 				groundSpeed := traveseTheData[float32](item.Data.GroundSpeed)
@@ -356,9 +356,17 @@ func scanForEntryIntoDB(
 					squawkCode,
 					item.Data.Emergency.Value)
 				if insertErr != nil {
-                    Log(fmt.Sprintf("Could not insert aircraft into db: %s", insertErr), ERROR)
-				}
+					Log(fmt.Sprintf("Could not insert aircraft into db: %s", insertErr), ERROR)
+				} else {
+					Log(fmt.Sprintf("Removing Entry from storage %s tailNumber: %s", item.Data.Icao, item.Data.TailNumber), INFO)
+					if _, delErr := sto.Delete(item.Key, simpleKeyCompare); delErr != nil {
+						Log(fmt.Sprintf("Could not remove entry from storage due to one of the following."+
+							"(1) Errmsg: %s (2): item key %d", delErr.Error(), item.Key), ERROR)
+					} else {
+						Log(fmt.Sprintf("Removed Entry from storage %s tailNumber: %s", item.Data.Icao, item.Data.TailNumber), INFO)
 
+					}
+				}
 			}
 		}
 		sto.Traverse(doPerNode)
@@ -373,9 +381,9 @@ func traverseCordinatesOverTime(data []CordinatesOverTime) []byte {
 	result, err := convertCordinatesOverTimeToJson(tempArr)
 	if err != nil {
 		Log(fmt.Sprintf("Failed to convert to json %s", err.Error()), ERROR)
-        return nil
+		return nil
 	}
-    return result
+	return result
 }
 
 func traveseTheData[T float32 | int](data []DataOverTime[T]) []byte {
@@ -386,7 +394,7 @@ func traveseTheData[T float32 | int](data []DataOverTime[T]) []byte {
 	result, err := convertDataOverTimeToJson(tempArr)
 	if err != nil {
 		Log(fmt.Sprintf("Failed to convert to json %s", err.Error()), ERROR)
-        return nil
+		return nil
 	}
-    return result
+	return result
 }

@@ -163,7 +163,7 @@ func TestTraverse(t *testing.T) {
 		Key:  -1,
 		Data: []byte{114},
 	}
-	item7:= Item[[]byte]{
+	item7 := Item[[]byte]{
 		Key:  6,
 		Data: []byte{115},
 	}
@@ -178,6 +178,202 @@ func TestTraverse(t *testing.T) {
 
 	var allItems []byte
 	answer := []byte{99, 109, 111, 112, 113, 114, 115}
+	visited := func(item Item[[]byte]) {
+		allItems = append(allItems, item.Data[0])
+	}
+	err := storage.Traverse(visited)
+	if err != nil {
+		t.Fatalf("Failed with traversal error: %q", err)
+	}
+	if len(allItems) != len(answer) {
+		t.Fatalf("Got wrong length of items %d was supposed to be %d", len(allItems), len(answer))
+	}
+	failedList := []string{}
+	for _, a := range answer {
+		if slices.Contains(allItems, a) == false {
+			failedList = append(failedList, fmt.Sprintf("Failed to find element in storage element: %d", a))
+		}
+	}
+	if len(failedList) > 0 {
+		sBuilder := strings.Builder{}
+		for _, f := range failedList {
+			sBuilder.WriteString(fmt.Sprint(f + "\n"))
+		}
+		t.Fatalf(sBuilder.String())
+	}
+}
+
+func TestDelete(t *testing.T) {
+	item1 := Item[[]byte]{
+		Key:  1,
+		Data: []byte{99},
+	}
+	item2 := Item[[]byte]{
+		Key:  2,
+		Data: []byte{109},
+	}
+	item3 := Item[[]byte]{
+		Key:  3,
+		Data: []byte{111},
+	}
+	item4 := Item[[]byte]{
+		Key:  4,
+		Data: []byte{112},
+	}
+	item5 := Item[[]byte]{
+		Key:  5,
+		Data: []byte{113},
+	}
+	item6 := Item[[]byte]{
+		Key:  -1,
+		Data: []byte{114},
+	}
+	item7 := Item[[]byte]{
+		Key:  6,
+		Data: []byte{115},
+	}
+	storage := New[[]byte]()
+	storage.Insert(item1, simpleKeyCompare)
+	storage.Insert(item2, simpleKeyCompare)
+	storage.Insert(item3, simpleKeyCompare)
+	storage.Insert(item4, simpleKeyCompare)
+	storage.Insert(item5, simpleKeyCompare)
+	storage.Insert(item6, simpleKeyCompare)
+	storage.Insert(item7, simpleKeyCompare)
+
+	deleteItem, delErr := storage.Delete(item3.Key, simpleKeyCompare)
+	if delErr != nil {
+		t.Fatalf(fmt.Sprintf("Failed to delete with error: %s", delErr.Error()))
+	}
+	if deleteItem.Data[0] != item3.Data[0] {
+		t.Fatalf("Did not get byte 109 back in delted Item got: %d", deleteItem.Data[0])
+	}
+
+	var allItems []byte
+	answer := []byte{99, 109, 112, 113, 114, 115}
+	visited := func(item Item[[]byte]) {
+		allItems = append(allItems, item.Data[0])
+	}
+	err := storage.Traverse(visited)
+	if err != nil {
+		t.Fatalf("Failed with traversal error: %q", err)
+	}
+	if len(allItems) != len(answer) {
+		t.Fatalf("Got wrong length of items %d was supposed to be %d", len(allItems), len(answer))
+	}
+	failedList := []string{}
+	for _, a := range answer {
+		if slices.Contains(allItems, a) == false {
+			failedList = append(failedList, fmt.Sprintf("Failed to find element in storage element: %d", a))
+		}
+	}
+	if len(failedList) > 0 {
+		sBuilder := strings.Builder{}
+		for _, f := range failedList {
+			sBuilder.WriteString(fmt.Sprint(f + "\n"))
+		}
+		t.Fatalf(sBuilder.String())
+	}
+}
+
+func TestCreateInsertDeleteSingleItem(t *testing.T) {
+	storage := New[[]byte]()
+	key := 1
+	const testByte byte = 10
+	item := Item[[]byte]{
+		Key:  key,
+		Data: []byte{testByte},
+	}
+	storage.Insert(item, simpleKeyCompare)
+
+	deleteItem, delErr := storage.Delete(item.Key, simpleKeyCompare)
+	if deleteItem.Key != key {
+		t.Fatalf("Delete key did not match original key w/ key %d", key)
+	}
+	if delErr != nil {
+		t.Fatalf("Delete key returned error key w/ key %d Error: %q", key, delErr)
+	}
+	if deleteItem.Key != key {
+		t.Fatalf("Got wrong key item back key %d. byte: %d", key, deleteItem.Data)
+	}
+	if deleteItem.Data[0] != 10 {
+		t.Fatalf("Got wrong item back key %d. byte: %d", key, deleteItem.Data[0])
+	}
+
+    // item should not exist
+	sitem, err := storage.Search(key, simpleKeyCompare)
+	if err == nil {
+		t.Fatalf("Did not Got error the search failed after delete w/ key %d. Error: %q", key, err)
+	} 
+	if sitem.Key != 0 {
+		t.Fatalf("Got wrong key item back key %d. byte: %d", key, sitem.Data)
+	}
+}
+
+func TestDeleteThenReInsert(t *testing.T) {
+	item1 := Item[[]byte]{
+		Key:  1,
+		Data: []byte{99},
+	}
+	item2 := Item[[]byte]{
+		Key:  2,
+		Data: []byte{109},
+	}
+	item3 := Item[[]byte]{
+		Key:  3,
+		Data: []byte{111},
+	}
+	item4 := Item[[]byte]{
+		Key:  4,
+		Data: []byte{112},
+	}
+	item5 := Item[[]byte]{
+		Key:  5,
+		Data: []byte{113},
+	}
+	item6 := Item[[]byte]{
+		Key:  -1,
+		Data: []byte{114},
+	}
+	item7 := Item[[]byte]{
+		Key:  6,
+		Data: []byte{115},
+	}
+	storage := New[[]byte]()
+	storage.Insert(item1, simpleKeyCompare)
+	storage.Insert(item2, simpleKeyCompare)
+	storage.Insert(item3, simpleKeyCompare)
+	storage.Insert(item4, simpleKeyCompare)
+	storage.Insert(item5, simpleKeyCompare)
+	storage.Insert(item6, simpleKeyCompare)
+	storage.Insert(item7, simpleKeyCompare)
+
+	deleteItem, delErr := storage.Delete(item3.Key, simpleKeyCompare)
+	if delErr != nil {
+		t.Fatalf(fmt.Sprintf("Failed to delete with error: %s", delErr.Error()))
+	}
+	if deleteItem.Data[0] != item3.Data[0] {
+		t.Fatalf("Did not get byte 109 back in delted Item got: %d", deleteItem.Data[0])
+	}
+	deleteItem4, delErr := storage.Delete(item4.Key, simpleKeyCompare)
+	if delErr != nil {
+		t.Fatalf(fmt.Sprintf("Failed to delete with error: %s", delErr.Error()))
+	}
+	if deleteItem4.Data[0] != item4.Data[0] {
+		t.Fatalf("Did not get byte 109 back in delted Item got: %d", deleteItem4.Data[0])
+	}
+
+    // re-insert deleteed item
+	storage.Insert(item3, simpleKeyCompare)
+	item10 := Item[[]byte]{
+		Key:  -2,
+		Data: []byte{116},
+	}
+    // insert new item
+	storage.Insert(item10, simpleKeyCompare)
+
+	var allItems []byte
+	answer := []byte{99, 111, 109, 113, 114, 115, 116}
 	visited := func(item Item[[]byte]) {
 		allItems = append(allItems, item.Data[0])
 	}
