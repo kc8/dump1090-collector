@@ -17,16 +17,11 @@ import (
    1. -1 if left < right
    1. +1 if left > right
 */
-type keyCompareFunc func(left int, right int) int
-type Item[T any] struct {
-	Key  int
-	Data T
-}
 
 type Storage[T any] struct {
 	root   *btNode[T] // first node
 	degree int        // range of keys per child
-	mutex       sync.Mutex
+	mutex  sync.Mutex
 }
 
 func New[T any]() Storage[T] {
@@ -115,9 +110,9 @@ func (s stack[T]) pop(node *btNode[T]) (*btNode[T], stack[T]) {
 /*
 DFS traverse
 */
-type DoPerNode[T any] func(Item[T])
-
 func (s *Storage[T]) Traverse(visitFn DoPerNode[T]) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	if s.root != nil {
 		var visited stack[T]
 		s.root.traverseNode(visitFn, visited)

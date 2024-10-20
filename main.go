@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	//"sync"
 	"time"
 
 	storage "github.com/kc8/dump-1090-aggergator/storage"
@@ -18,21 +19,21 @@ var (
 	TEN_SECOND_DEADLINE  = time.Now().Add(10 * time.Second)
 	ONE_SEOCND_DEADLINE  = time.Now().Add(1 * time.Second)
 
-	sto = storage.New[CollectedData]()
+	sto        = storage.NewMapStorage[CollectedData]()
+	lookupAddr = flag.String("lookupAddr", "", "FQDN to lookup translations and other metdata")
 )
 
 func main() {
 	var (
 		addr                   = flag.String("addr", "", "Adress of piaware")
 		port                   = flag.String("port", "30003", "Port for CSV protocol")
-		lookupAddr             = flag.String("lookupAddr", "", "FQDN to lookup translations and other metdata")
 		dbLocation             = flag.String("dbLoc", "", "Path to the sqlite4 database location Example: /home/user/Documents")
 		dbFileName             = flag.String("dbFilename", "dump1090reader.db", "Override filename of sqlite3 database example: dump1090reader.db")
 		flightSessionLen int64 = 7200000
 	)
 	flag.Int64Var(&flightSessionLen, "flightSessionDur", 7200000, "MS for how long a flight session is default: 2 hours  7,200,000 ms")
 	flag.Parse()
-	dbInstance, dbCreateErr := database.New(*dbFileName, *dbLocation)
+	dbInstance, dbCreateErr := database.New(*dbFileName, **&dbLocation)
 	if dbCreateErr != nil {
 		Log(fmt.Sprintf("Could not open database: %q", dbCreateErr), ERROR)
 		panic("Database was not open: pancing")
@@ -58,16 +59,18 @@ func main() {
 	}
 
 	go func() {
-		s := make(chan os.Signal)
+		s := make(chan os.Signal, 1)
 		signal.Notify(s, os.Interrupt)
 		<-s
 		signal.Reset()
 		done <- true
 	}()
 
-	// TODO race conditions are now going to be present in our storage
-	go readData(ctx, *addr, *port, *lookupAddr, done)
-	go scanForEntryIntoDB(ctx, dbInstance, &sto, done, flightSessionLen)
+	findChannel := make(chan Nullable[storage.MapItem[CollectedData]])
+	queue := NewQueue(&sto)
+	go queue.run(findChannel)
+	go readData(ctx, *addr, *port, *lookupAddr, done, queue, findChannel)
+	go scanForEntryIntoDB(ctx, dbInstance, &sto, done, flightSessionLen, queue)
 	<-done
 }
 
@@ -81,7 +84,170 @@ func generateConnection(ctx context.Context, host string, port string) (net.Conn
 	return dial, nil
 }
 
-func readData(ctx context.Context, host string, port string, lookupAddr string, done chan bool) {
+func createNewDataEntry(rawAircraft *FormattedAdbsMsg) storage.MapItem[CollectedData] {
+	// TODO I want to try and cache this
+	currentKey := rawAircraft.AircraftICAOAddr
+	addr := fmt.Sprintf(
+		"http://%s/icaoTranslate?icao=%s",
+		*lookupAddr,
+		rawAircraft.AircraftICAOAddr)
+
+	resp, err := getAircraftMetaData(addr)
+	if err != nil {
+		Log(fmt.Sprintf("Failed to look up aircraft info due to %s", err.Error()), WARN)
+	}
+	tailNum := ""
+	if resp.Number != "" {
+		tailNum = fmt.Sprintf("%s%s", resp.Prefix, resp.Number)
+	}
+	Log(fmt.Sprintf("Missed %s, adding", rawAircraft.AircraftICAOAddr), INFO)
+	item := storage.MapItem[CollectedData]{
+		Key: currentKey,
+		Data: CollectedData{
+			FirstSeen:  time.Now().UTC().UnixMilli(),
+			Icao:       rawAircraft.AircraftICAOAddr,
+			TailNumber: tailNum,
+			MsgCount:   1,
+		},
+	}
+	return item
+}
+
+func updateEntry(value storage.MapItem[CollectedData], result *FormattedAdbsMsg) storage.MapItem[CollectedData] {
+    newValue := value // We are making copies
+	currentTimeStamp := time.Now().UTC().UnixMilli()
+	newValue.Data.LastSeen = currentTimeStamp
+	newValue.Data.MsgCount++
+
+	if result.Lat.Valid == true && result.Long.Valid == true {
+		if len(value.Data.Coordinates) == 0 {
+			newValue.Data.Coordinates = append(
+				newValue.Data.Coordinates,
+				CordinatesOverTime{
+					Lat:          result.Lat.Value,
+					Long:         result.Long.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+		if len(value.Data.Coordinates) >= 1 && (floatCompare(value.Data.Coordinates[len(value.Data.Coordinates)-1].Lat, result.Lat.Value, 0.01) ||
+			floatCompare(value.Data.Coordinates[len(value.Data.Coordinates)-1].Long, result.Long.Value, 0.01)) {
+			newValue.Data.Coordinates = append(
+				newValue.Data.Coordinates,
+				CordinatesOverTime{
+					Lat:          result.Lat.Value,
+					Long:         result.Long.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+	}
+	if result.Altitude.Valid == true {
+		if len(value.Data.Altitude) == 0 {
+			newValue.Data.Altitude = append(
+				newValue.Data.Altitude,
+				DataOverTime[float32]{
+					Data:         result.Altitude.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+		if len(value.Data.Altitude) >= 1 && floatCompare(value.Data.Altitude[len(value.Data.Altitude)-1].Data, result.Altitude.Value, 0.01) &&
+			floatCompare(value.Data.Altitude[len(value.Data.Altitude)-1].Data, result.Altitude.Value, 0.01) {
+			newValue.Data.Altitude = append(
+				newValue.Data.Altitude,
+				DataOverTime[float32]{
+					Data:         result.Altitude.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+
+	}
+	if result.GroundSpeed.Valid == true {
+		if len(value.Data.GroundSpeed) == 0 {
+			newValue.Data.GroundSpeed = append(
+				newValue.Data.GroundSpeed,
+				DataOverTime[float32]{
+					Data:         result.GroundSpeed.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+		if len(value.Data.GroundSpeed) >= 1 && floatCompare(value.Data.GroundSpeed[len(value.Data.GroundSpeed)-1].Data, result.GroundSpeed.Value, 0.01) &&
+			floatCompare(value.Data.GroundSpeed[len(value.Data.GroundSpeed)-1].Data, result.GroundSpeed.Value, 0.01) {
+			newValue.Data.GroundSpeed = append(
+				newValue.Data.GroundSpeed,
+				DataOverTime[float32]{
+					Data:         result.GroundSpeed.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+	}
+	if result.HeadingTrack.Valid == true {
+		if len(value.Data.HeadingTrack) == 0 {
+			newValue.Data.HeadingTrack = append(
+				newValue.Data.HeadingTrack,
+				DataOverTime[int]{
+					Data:         result.HeadingTrack.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+		if len(value.Data.HeadingTrack) >= 1 && value.Data.HeadingTrack[len(value.Data.HeadingTrack)-1].Data != result.HeadingTrack.Value {
+			newValue.Data.HeadingTrack = append(
+				newValue.Data.HeadingTrack,
+				DataOverTime[int]{
+					Data:         result.HeadingTrack.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+	}
+	if result.VerticalRate.Valid == true {
+		if len(value.Data.VerticalRate) == 0 {
+			newValue.Data.VerticalRate = append(
+				newValue.Data.VerticalRate,
+				DataOverTime[float32]{
+					Data:         result.VerticalRate.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+		if len(value.Data.VerticalRate) >= 1 && floatCompare(value.Data.VerticalRate[len(value.Data.VerticalRate)-1].Data, result.VerticalRate.Value, 0.01) &&
+			floatCompare(value.Data.VerticalRate[len(value.Data.VerticalRate)-1].Data, result.VerticalRate.Value, 0.01) {
+			newValue.Data.VerticalRate = append(
+				newValue.Data.VerticalRate,
+				DataOverTime[float32]{
+					Data:         result.VerticalRate.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+	}
+	if result.SquawkCode.Valid == true {
+		if len(value.Data.SquawkCode) == 0 {
+			newValue.Data.SquawkCode = append(
+				newValue.Data.SquawkCode,
+				DataOverTime[int]{
+					Data:         result.SquawkCode.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+		if len(value.Data.SquawkCode) >= 1 && value.Data.SquawkCode[len(value.Data.SquawkCode)-1].Data != result.SquawkCode.Value {
+			newValue.Data.SquawkCode = append(
+				newValue.Data.SquawkCode,
+				DataOverTime[int]{
+					Data:         result.SquawkCode.Value,
+					TimestampUTC: currentTimeStamp,
+				})
+		}
+	}
+	if result.Emergency.Valid == true {
+		newValue.Data.Emergency = result.Emergency
+	}
+    return newValue
+}
+
+func readData(
+	ctx context.Context,
+	host string,
+	port string,
+	lookupAddr string,
+	done chan bool,
+	itemQueue *modifyStoQueue,
+	fndChan chan Nullable[storage.MapItem[CollectedData]]) {
 	tempBuf := make([]byte, 1)
 	currentMsg := make([]byte, 128)
 
@@ -136,10 +302,16 @@ func readData(ctx context.Context, host string, port string, lookupAddr string, 
 			if err != nil {
 				Log(fmt.Sprintf("Failed to correctly parse from connection due to: %s", err.Error()), ERROR)
 			}
-			currentKey := simpleKey(result.AircraftICAOAddr)
+			//currentKey := result.AircraftICAOAddr
 
-			if value, err := sto.Search(currentKey, simpleKeyCompare); err != nil {
-				if err.Error() == "Not Found" {
+			//if value, err := sto.Search(currentKey, simpleKeyCompare); err != nil {
+			// itemQueue.addSearch(currentKey)
+            itemQueue.updateOrAdd(result)
+			/*item := <-fndChan
+
+			findErr := item.maybeErr
+			if findErr != nil && item.Valid == false {
+				if findErr.Error() == "Not Found" {
 					// TODO I want to try and cache this
 					addr := fmt.Sprintf("http://%s/icaoTranslate?icao=%s", lookupAddr, result.AircraftICAOAddr)
 					resp, err := getAircraftMetaData(addr)
@@ -151,7 +323,7 @@ func readData(ctx context.Context, host string, port string, lookupAddr string, 
 						tailNum = fmt.Sprintf("%s%s", resp.Prefix, resp.Number)
 					}
 					Log(fmt.Sprintf("Missed %s, adding", result.AircraftICAOAddr), INFO)
-					item := storage.Item[CollectedData]{
+					item := storage.MapItem[CollectedData]{
 						Key: currentKey,
 						Data: CollectedData{
 							FirstSeen:  time.Now().UTC().UnixMilli(),
@@ -160,11 +332,15 @@ func readData(ctx context.Context, host string, port string, lookupAddr string, 
 							MsgCount:   1,
 						},
 					}
-					if err := sto.Insert(item, simpleKeyCompare); err != nil {
-						Log(err.Error(), ERROR)
-					}
+					itemQueue.append(item)
+					//if err := sto.Insert(item, simpleKeyCompare); err != nil {
+					//	Log(err.Error(), ERROR)
+					//}
+				} else {
+					Log(fmt.Sprintf("Search error encountered %s ", findErr), ERROR)
 				}
 			} else {
+				value := item.Value
 				// Make a copy to update
 				newValue := value
 				currentTimeStamp := time.Now().UTC().UnixMilli()
@@ -290,9 +466,10 @@ func readData(ctx context.Context, host string, port string, lookupAddr string, 
 					newValue.Data.Emergency = result.Emergency
 				}
 
-				if err := sto.Insert(newValue, simpleKeyCompare); err != nil {
+				itemQueue.append(newValue)*/
+				/*if err := sto.Insert(newValue, simpleKeyCompare); err != nil {
 					Log(err.Error(), ERROR)
-				}
+				}*/
 			}
 		}
 
@@ -300,7 +477,7 @@ func readData(ctx context.Context, host string, port string, lookupAddr string, 
 		for i := range currentMsg {
 			currentMsg[i] = 0
 		}
-	}
+	//}
 }
 
 var CURRENT_TICK int = 0
@@ -320,20 +497,22 @@ func tick(ticker *time.Ticker, stop chan bool) {
 func scanForEntryIntoDB(
 	ctx context.Context,
 	db *database.Db,
-	sto *storage.Storage[CollectedData],
+	sto *storage.MapStorage[CollectedData],
 	done chan bool,
-	sessionLen int64) {
+	sessionLen int64,
+	itemQueue *modifyStoQueue) {
 	ticker := time.NewTicker(time.Second * 5)
 
 	go tick(ticker, done)
 	for {
+		// nodesToDeleteFromSto := make([]int, 0)
 		<-ticker.C
 		Log("Checking for Aircraft to add to the database", INFO)
-		doPerNode := func(item storage.Item[CollectedData]) {
-            now := time.Now().UTC().UnixMilli()
-            then :=  time.UnixMilli(item.Data.LastSeen).UTC().UnixMilli()
+		doPerNode := func(item storage.MapItem[CollectedData]) {
+			now := time.Now().UTC().UnixMilli()
+			then := time.UnixMilli(item.Data.LastSeen).UTC().UnixMilli()
 			if (now - then) >= 10000 {
-				Log(fmt.Sprintf("Add storage %d getRidOfAt : %d", time.Now().UTC().UnixMilli(), (now - then)), INFO)
+				Log(fmt.Sprintf("Add storage %d getRidOfAt : %d", time.Now().UTC().UnixMilli(), (now-then)), INFO)
 				headingTrack := traveseTheData[int](item.Data.HeadingTrack)
 				altitude := traveseTheData[float32](item.Data.Altitude)
 				groundSpeed := traveseTheData[float32](item.Data.GroundSpeed)
@@ -358,18 +537,13 @@ func scanForEntryIntoDB(
 				if insertErr != nil {
 					Log(fmt.Sprintf("Could not insert aircraft into db: %s", insertErr), ERROR)
 				} else {
-					Log(fmt.Sprintf("Removing Entry from storage %s tailNumber: %s", item.Data.Icao, item.Data.TailNumber), INFO)
-					if _, delErr := sto.Delete(item.Key, simpleKeyCompare); delErr != nil {
-						Log(fmt.Sprintf("Could not remove entry from storage due to one of the following."+
-							"(1) Errmsg: %s (2): item key %d", delErr.Error(), item.Key), ERROR)
-					} else {
-						Log(fmt.Sprintf("Removed Entry from storage %s tailNumber: %s", item.Data.Icao, item.Data.TailNumber), INFO)
-
-					}
+					Log(fmt.Sprintf("Marking entry from storage %s tailNumber: %s for deletion", item.Data.Icao, item.Data.TailNumber), INFO)
+					// nodesToDeleteFromSto = append(nodesToDeleteFromSto, item.Key)
+					itemQueue.delete(item)
 				}
 			}
 		}
-		sto.Traverse(doPerNode)
+		itemQueue.checkForReadyToDelete(doPerNode)
 	}
 }
 
