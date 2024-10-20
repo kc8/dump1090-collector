@@ -27,7 +27,6 @@ type Task struct {
 
 type modifyStoQueue struct {
 	queue *queue.Queue[Task]
-	//mutex      sync.Mutex
 	backendSto *storage.MapStorage[CollectedData]
 }
 
