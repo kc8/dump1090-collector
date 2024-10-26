@@ -9,7 +9,7 @@ build:
 
 # example make run $ARGS="-addr="sub.domain.com"
 run: 
-	go run . $(ARGS)
+	go run -race . $(ARGS)
 
 clean:
 	rm -rf dist/

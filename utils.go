@@ -1,12 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
-    "encoding/json"
-    "math"
 )
 
 type isFound func(arr []byte, index int, key byte) bool
@@ -45,36 +45,36 @@ func Log(msg string, l level) {
 }
 
 type aircraftDataResp struct {
-    Prefix string `json:"prefix"`
-    Number string `json:"number"`
+	Prefix string `json:"prefix"`
+	Number string `json:"number"`
 }
 
 /*
 fullUri is the complete uri
 */
-func getAircraftMetaData(fullUri string) (*aircraftDataResp, error){
-    req, err := http.NewRequest(http.MethodGet, fullUri, nil)
-    res, err := http.DefaultClient.Do(req)
-    if err != nil {
-        return nil, err
-    }
-    if res.StatusCode != 200 {
-        return nil, errors.New(fmt.Sprintf("Unexpected result from server got response code: %d", res.StatusCode))
-    }
-    var formatted aircraftDataResp
-    if err := json.NewDecoder(res.Body).Decode(&formatted); err != nil {
-        return nil, err
-    }
-    return &formatted, nil
+func getAircraftMetaData(fullUri string) (*aircraftDataResp, error) {
+	req, err := http.NewRequest(http.MethodGet, fullUri, nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != 200 {
+		return nil, errors.New(fmt.Sprintf("Unexpected result from server got response code: %d", res.StatusCode))
+	}
+	var formatted aircraftDataResp
+	if err := json.NewDecoder(res.Body).Decode(&formatted); err != nil {
+		return nil, err
+	}
+	return &formatted, nil
 }
 
 // NOTE: Simple key will not gaurentee a unique key!
 func simpleKey(s string) int {
-    var result int
-    for _, c := range s {
-        result += int(byte(c))
-    }
-    return result
+	var result int
+	for _, c := range s {
+		result += int(byte(c))
+	}
+	return result
 }
 
 func simpleKeyCompare(a int, b int) int {

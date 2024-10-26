@@ -84,7 +84,8 @@ func (d *Db) Clean() error {
 	return nil
 }
 
-func (d *Db) Insert(ctx context.Context,
+func (d *Db) Insert(
+    ctx context.Context,
 	lastSeen    int64,
 	firstSeen   int64,
 	msgCount    uint64,
@@ -109,6 +110,7 @@ func (d *Db) Insert(ctx context.Context,
 	insertStatement := `
     insert into aircraftData(
         icao,
+        tailNumber,
         firstSeen,
         lastSeen,
         msgCount,
@@ -131,6 +133,7 @@ func (d *Db) Insert(ctx context.Context,
         ?,
         ?,
         ?,
+        ?,
         ?
     );
     `
@@ -142,6 +145,7 @@ func (d *Db) Insert(ctx context.Context,
 	defer stmt.Close()
 	exec, execErr := stmt.Exec(
        icao,
+       tailNumber,
        firstSeen,
        lastSeen,
        msgCount,
@@ -174,6 +178,7 @@ func (d *Db) createTable() error {
 	defer d.mutex.Unlock()
 	const CREATE_TABLE = `CREATE TABLE IF NOT EXISTS aircraftData (
         "icao" VARCHAR(64),
+        "tailNumber" VARCHAR(64),
         "firstSeen" UNSIGNED BIG INT, 
         "lastSeen" UNSIGNED BIG INT, 
         "msgCount" UNSIGNED BIG INT,
@@ -209,3 +214,4 @@ func (d *Db) createTable() error {
 func (d *Db) TestConnnection() error {
 	return d.databaseCon.Ping()
 }
+

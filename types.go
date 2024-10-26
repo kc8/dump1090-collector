@@ -7,6 +7,7 @@ import (
 type Nullable[T any] struct {
 	Value T
 	Valid bool
+     maybeErr error 
 }
 
 type CordinatesOverTime struct {
